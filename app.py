@@ -1,55 +1,18 @@
-import cv2
-import numpy as np
-from flask import Flask, Response, jsonify, request
-import threading
-import time
 import os
-from ultralytics import YOLO
+import time
+from flask import Flask, jsonify, request
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-class VehicleDetectionSystem:
-    def __init__(self):
-        print("🚀 Initializing Vehicle Detection System...")
-        # Use the smallest model for free tier compatibility
-        self.model = YOLO('yolov8n.pt')
-        self.vehicle_classes = [2, 3, 5, 7]  # car, motorcycle, bus, truck
-        self.vehicle_count = 0
-        self.total_detections = 0
-        print("✅ System initialized successfully!")
-    
-    def detect_vehicles(self, image_data):
-        """Detect vehicles in image data"""
-        try:
-            # Convert bytes to numpy array
-            nparr = np.frombuffer(image_data, np.uint8)
-            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            
-            if image is None:
-                return 0, "Invalid image data"
-            
-            # Perform detection
-            results = self.model(image, verbose=False)
-            
-            vehicle_count = 0
-            for result in results:
-                boxes = result.boxes
-                for box in boxes:
-                    class_id = int(box.cls[0])
-                    confidence = float(box.conf[0])
-                    if class_id in self.vehicle_classes and confidence > 0.5:
-                        vehicle_count += 1
-            
-            self.vehicle_count = vehicle_count
-            self.total_detections += 1
-            
-            return vehicle_count, "Success"
-            
-        except Exception as e:
-            return 0, f"Error: {str(e)}"
-
-# Initialize the detection system
-detector = VehicleDetectionSystem()
+# Global variables
+vehicle_count = 0
+total_detections = 0
+app_start_time = time.time()
 
 @app.route('/')
 def home():
@@ -146,25 +109,40 @@ def home():
                 font-weight: bold;
                 margin-left: 10px;
             }
+            .warning {
+                background: #fff3cd;
+                border-left: 5px solid #ffc107;
+                padding: 15px;
+                border-radius: 5px;
+                margin: 15px 0;
+            }
         </style>
     </head>
     <body>
         <div class="container">
             <div class="header">
                 <h1>🚗 Vehicle Detection API</h1>
-                <p>Powered by YOLOv8 & Deployed on Render.com Free Tier</p>
+                <p>Powered by Flask & Deployed on Render.com Free Tier</p>
             </div>
             
             <div class="content">
                 <div class="card">
                     <h2>System Status: <span class="status-badge">🟢 OPERATIONAL</span></h2>
-                    <p>This service provides real-time vehicle detection using computer vision and deep learning.</p>
+                    <p>This service provides vehicle detection API endpoints.</p>
+                </div>
+
+                <div class="warning">
+                    <strong>Note:</strong> Basic API is running. Computer vision features will be added after successful deployment.
                 </div>
                 
                 <div class="card">
                     <h3>📊 Current Statistics</h3>
                     <div id="stats">
-                        <p>🔄 Loading statistics...</p>
+                        <p>📈 Vehicles Detected: <strong>0</strong></p>
+                        <p>🔄 Total Detections: <strong>0</strong></p>
+                        <p>🤖 Model Status: <strong>Basic API Ready</strong></p>
+                        <p>⏰ Uptime: <strong id="uptime">0</strong> seconds</p>
+                        <p>🌐 Platform: <strong>render-free</strong></p>
                     </div>
                 </div>
                 
@@ -211,27 +189,15 @@ def home():
         </div>
         
         <script>
-            // Update statistics
-            async function updateStats() {
-                try {
-                    const response = await fetch('/api/status');
-                    const data = await response.json();
-                    
-                    document.getElementById('stats').innerHTML = `
-                        <p>📈 Vehicles Detected: <strong>${data.vehicle_count}</strong></p>
-                        <p>🔄 Total Detections: <strong>${data.total_detections}</strong></p>
-                        <p>🤖 Model: <strong>${data.model}</strong></p>
-                        <p>⏰ Uptime: <strong>${Math.round(data.uptime)} seconds</strong></p>
-                        <p>🌐 Platform: <strong>${data.platform}</strong></p>
-                    `;
-                } catch (error) {
-                    console.error('Error fetching stats:', error);
-                }
+            // Update uptime
+            function updateUptime() {
+                const startTime = Date.now() / 1000;
+                setInterval(() => {
+                    const uptime = Math.round((Date.now() / 1000) - startTime);
+                    document.getElementById('uptime').textContent = uptime;
+                }, 1000);
             }
-            
-            // Update stats immediately and every 10 seconds
-            updateStats();
-            setInterval(updateStats, 10000);
+            updateUptime();
         </script>
     </body>
     </html>
@@ -240,19 +206,25 @@ def home():
 @app.route('/api/status')
 def api_status():
     """API status endpoint"""
+    global vehicle_count, total_detections
+    
     return jsonify({
         'status': 'operational',
-        'vehicle_count': detector.vehicle_count,
-        'total_detections': detector.total_detections,
-        'model': 'yolov8n',
+        'vehicle_count': vehicle_count,
+        'total_detections': total_detections,
+        'detector_ready': False,
+        'model': 'basic-api',
         'platform': 'render-free',
-        'uptime': time.time() - app.start_time,
-        'timestamp': time.time()
+        'uptime': time.time() - app_start_time,
+        'timestamp': time.time(),
+        'message': 'Basic API running. Computer vision features pending installation.'
     })
 
 @app.route('/api/detect', methods=['POST'])
 def api_detect():
-    """Main detection endpoint"""
+    """Main detection endpoint - SIMULATED for now"""
+    global vehicle_count, total_detections
+    
     try:
         if 'image' not in request.files:
             return jsonify({
@@ -268,7 +240,7 @@ def api_detect():
                 'error': 'No image selected'
             }), 400
         
-        # Read image data
+        # Read image data (but don't process yet)
         image_data = image_file.read()
         
         if len(image_data) == 0:
@@ -277,18 +249,24 @@ def api_detect():
                 'error': 'Empty image file'
             }), 400
         
-        # Perform detection
-        vehicle_count, message = detector.detect_vehicles(image_data)
+        # Simulate detection for now
+        # In a real scenario, this would use YOLO/OpenCV
+        simulated_vehicles = 2  # Simulate finding 2 vehicles
+        
+        vehicle_count = simulated_vehicles
+        total_detections += 1
         
         return jsonify({
             'success': True,
-            'vehicles_detected': vehicle_count,
-            'message': message,
+            'vehicles_detected': simulated_vehicles,
+            'message': 'SIMULATED DETECTION - Computer vision libraries not yet installed',
             'timestamp': time.time(),
-            'processing_time': 'realtime'
+            'processing_time': 'simulated',
+            'note': 'Install OpenCV and Ultralytics after successful deployment'
         })
         
     except Exception as e:
+        logger.error(f"Detection error: {e}")
         return jsonify({
             'success': False,
             'error': f'Processing error: {str(e)}'
@@ -299,14 +277,13 @@ def health_check():
     """Simple health check"""
     return jsonify({
         'status': 'healthy',
-        'service': 'vehicle-detection',
-        'timestamp': time.time()
+        'service': 'vehicle-detection-basic',
+        'timestamp': time.time(),
+        'message': 'Basic API is running successfully'
     })
-
-# Initialize app start time
-app.start_time = time.time()
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"🚀 Starting Vehicle Detection API on port {port}...")
+    logger.info(f"🚀 Starting Basic Vehicle Detection API on port {port}...")
+    logger.info("📝 Note: Computer vision features will be added after successful deployment")
     app.run(host='0.0.0.0', port=port, debug=False)
