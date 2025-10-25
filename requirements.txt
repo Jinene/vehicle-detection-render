@@ -1,6 +1,8 @@
-opencv-python==4.8.1.78
+opencv-python-headless==4.8.1.78
 ultralytics==8.0.186
 numpy==1.24.3
 flask==2.3.3
 pillow==10.0.0
 gunicorn==21.2.0
+setuptools==65.5.0
+wheel==0.38.4
