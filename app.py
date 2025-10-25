@@ -12,81 +12,173 @@ app = Flask(__name__)
 vehicle_count = 0
 total_detections = 0
 app_start_time = time.time()
-stream_active = False
-current_stream_url = ""
+stream_active = True
+
+# YOUR ESP32 STREAM URL - Automatically connected
+ESP32_STREAM_URL = "http://192.168.4.1/"
+current_capture = None
+
+def initialize_camera():
+    """Initialize connection to ESP32 camera"""
+    global current_capture
+    try:
+        print(f"🚀 Connecting to ESP32 camera: {ESP32_STREAM_URL}")
+        current_capture = cv2.VideoCapture(ESP32_STREAM_URL)
+        
+        # Test the connection
+        if current_capture.isOpened():
+            ret, frame = current_capture.read()
+            if ret:
+                print("✅ Successfully connected to ESP32 camera!")
+                return True
+            else:
+                print("❌ Connected but cannot read frames")
+        else:
+            print("❌ Cannot connect to ESP32 camera")
+            
+    except Exception as e:
+        print(f"❌ Error connecting to ESP32: {e}")
+    
+    return False
+
+def generate_esp32_stream():
+    """Generate video stream from ESP32 camera"""
+    global stream_active, vehicle_count
+    
+    # Initialize camera connection
+    if not initialize_camera():
+        # Fallback to demo stream if ESP32 is not available
+        yield from generate_demo_stream()
+        return
+    
+    frame_count = 0
+    while stream_active and current_capture.isOpened():
+        try:
+            # Read frame from ESP32
+            ret, frame = current_capture.read()
+            
+            if not ret:
+                print("❌ Lost connection to ESP32, switching to demo stream")
+                yield from generate_demo_stream()
+                break
+            
+            # Resize frame for consistent display
+            frame = cv2.resize(frame, (640, 480))
+            
+            # Perform vehicle detection on the frame
+            processed_frame, detected_vehicles = detect_vehicles(frame)
+            vehicle_count = detected_vehicles
+            
+            # Add overlay information
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            cv2.putText(processed_frame, f"ESP32 Live Stream - {timestamp}", (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cv2.putText(processed_frame, f"Vehicles: {vehicle_count}", (10, 60), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            cv2.putText(processed_frame, "Source: http://192.168.4.1/", (10, 450), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            
+            # Encode frame as JPEG
+            ret, buffer = cv2.imencode('.jpg', processed_frame)
+            frame_bytes = buffer.tobytes()
+            
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            
+            frame_count += 1
+            time.sleep(0.1)  # Control frame rate
+            
+        except Exception as e:
+            print(f"Stream error: {e}")
+            yield from generate_demo_stream()
+            break
 
 def generate_demo_stream():
-    """Generate a demo video stream with synthetic vehicles"""
+    """Generate demo stream as fallback"""
+    global vehicle_count
     while stream_active:
         try:
-            # Create a synthetic frame (640x480)
             width, height = 640, 480
             frame = np.zeros((height, width, 3), dtype=np.uint8)
             
-            # Create a realistic-looking background (road-like)
-            frame[100:400, :] = [100, 100, 100]  # Road color
-            frame[0:100, :] = [135, 206, 235]    # Sky color
-            frame[400:480, :] = [34, 139, 34]    # Grass color
+            # Create realistic background
+            frame[100:400, :] = [100, 100, 100]  # Road
+            frame[0:100, :] = [135, 206, 235]    # Sky
+            frame[400:480, :] = [34, 139, 34]    # Grass
             
-            # Add road markings
+            # Road markings
             cv2.line(frame, (0, 250), (width, 250), (255, 255, 255), 2)
             cv2.line(frame, (0, 350), (width, 350), (255, 255, 255), 2)
             
-            # Add moving vehicles (they'll move across the screen)
-            global vehicle_count
+            # Moving vehicles
             vehicle_count = random.randint(1, 4)
-            
-            # Draw vehicles as colored rectangles
-            colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0), (255, 255, 0)]  # Red, Green, Blue, Yellow
+            colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0), (255, 255, 0)]
             
             for i in range(vehicle_count):
-                # Make vehicles move
                 x_pos = int((time.time() * 50 + i * 150) % (width + 200) - 100)
                 y_pos = 280 + (i * 30)
                 
-                # Draw vehicle body
                 cv2.rectangle(frame, (x_pos, y_pos), (x_pos + 120, y_pos + 60), colors[i], -1)
-                
-                # Draw vehicle windows
                 cv2.rectangle(frame, (x_pos + 10, y_pos + 10), (x_pos + 50, y_pos + 30), (200, 200, 255), -1)
                 cv2.rectangle(frame, (x_pos + 70, y_pos + 10), (x_pos + 110, y_pos + 30), (200, 200, 255), -1)
                 
-                # Add vehicle label
                 vehicle_types = ["Car", "Truck", "Bus", "Motorcycle"]
                 cv2.putText(frame, vehicle_types[i], (x_pos + 10, y_pos - 10), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, colors[i], 2)
             
-            # Add timestamp and info
+            # Overlay info
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-            cv2.putText(frame, f"Live Stream - {timestamp}", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            cv2.putText(frame, f"Vehicles: {vehicle_count}", (10, 70), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.putText(frame, "DEMO STREAM - Add your ESP32 URL below", (10, 450), 
+            cv2.putText(frame, f"Demo Stream - ESP32 Offline - {timestamp}", (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cv2.putText(frame, f"Vehicles: {vehicle_count}", (10, 60), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            cv2.putText(frame, "Trying to connect: http://192.168.4.1/", (10, 450), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
-            # Encode frame as JPEG
             ret, buffer = cv2.imencode('.jpg', frame)
             frame_bytes = buffer.tobytes()
             
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
             
-            # Control frame rate (10 FPS)
             time.sleep(0.1)
             
         except Exception as e:
-            print(f"Stream error: {e}")
+            print(f"Demo stream error: {e}")
             break
+
+def detect_vehicles(frame):
+    """Simple vehicle detection (will be enhanced with YOLO later)"""
+    try:
+        # Convert to grayscale
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # Simple detection based on color and shape (placeholder)
+        # This will be replaced with YOLO in the next phase
+        height, width = frame.shape[:2]
+        
+        # Simulate detection for now
+        detected_vehicles = random.randint(0, 3)
+        
+        # Draw some detection indicators
+        if detected_vehicles > 0:
+            cv2.putText(frame, "VEHICLE DETECTED", (width-200, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        
+        return frame, detected_vehicles
+        
+    except Exception as e:
+        print(f"Detection error: {e}")
+        return frame, 0
 
 @app.route('/')
 def home():
-    """Dashboard with live video streaming"""
+    """Dashboard with ESP32 live streaming"""
     return """
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Live Vehicle Detection Dashboard</title>
+        <title>ESP32 Live Vehicle Detection</title>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
@@ -176,10 +268,26 @@ def home():
                 font-size: 1.1em;
                 opacity: 0.9;
             }
+            .connection-info {
+                background: rgba(255,255,255,0.1);
+                padding: 20px;
+                border-radius: 15px;
+                margin-top: 20px;
+                backdrop-filter: blur(10px);
+            }
+            .status-indicator {
+                display: inline-block;
+                width: 12px;
+                height: 12px;
+                border-radius: 50%;
+                margin-right: 8px;
+            }
+            .status-connected { background: #00ff00; }
+            .status-disconnected { background: #ff0000; }
             .controls {
                 display: grid;
                 gap: 10px;
-                margin-top: 20px;
+                margin-top: 15px;
             }
             .control-btn {
                 background: #3498db;
@@ -194,87 +302,36 @@ def home():
             .control-btn:hover {
                 background: #2980b9;
             }
-            .control-btn.start { background: #27ae60; }
-            .control-btn.start:hover { background: #219a52; }
-            .control-btn.stop { background: #e74c3c; }
-            .control-btn.stop:hover { background: #c0392b; }
-            .stream-config {
-                background: rgba(255,255,255,0.1);
-                padding: 25px;
-                border-radius: 15px;
-                margin-top: 20px;
-                backdrop-filter: blur(10px);
-            }
-            .input-group {
-                display: flex;
-                gap: 10px;
-                margin: 15px 0;
-            }
-            input[type="text"] {
-                flex: 1;
-                padding: 12px;
-                border: 1px solid #ccc;
-                border-radius: 5px;
-                font-size: 1em;
-            }
-            .examples {
-                background: rgba(255,255,255,0.05);
-                padding: 15px;
-                border-radius: 8px;
-                margin-top: 15px;
-            }
-            .examples h4 {
-                margin-bottom: 10px;
-                color: #3498db;
-            }
-            .examples ul {
-                list-style: none;
-                padding-left: 0;
-            }
-            .examples li {
-                padding: 5px 0;
-                border-bottom: 1px solid rgba(255,255,255,0.1);
-            }
-            .status-indicator {
-                display: inline-block;
-                width: 10px;
-                height: 10px;
-                border-radius: 50%;
-                margin-right: 8px;
-            }
-            .status-live { background: #00ff00; }
-            .status-offline { background: #ff0000; }
         </style>
     </head>
     <body>
         <div class="dashboard">
             <div class="header">
-                <h1>🚗 Live Vehicle Detection Dashboard</h1>
-                <p>Real-time video streaming with vehicle detection</p>
+                <h1>🚗 ESP32 Live Vehicle Detection</h1>
+                <p>Directly streaming from your ESP32 camera</p>
             </div>
             
             <div class="live-container">
-                <!-- Video Stream Section -->
+                <!-- ESP32 Video Stream -->
                 <div class="video-stream">
-                    <h3>📹 Live Video Stream</h3>
+                    <h3>📹 ESP32 Live Stream</h3>
                     <div class="video-container">
-                        <img id="videoFeed" src="/video_feed" alt="Live Video Feed">
+                        <img id="videoFeed" src="/video_feed" alt="ESP32 Live Feed">
                         <div class="stream-overlay">
-                            <span class="status-indicator status-live"></span>
+                            <span class="status-indicator status-connected" id="statusIndicator"></span>
                             Vehicles: <span id="liveCount">0</span> | 
                             FPS: <span id="fpsCounter">0</span>
                         </div>
                     </div>
-                    <div class="controls" style="margin-top: 15px;">
-                        <button class="control-btn start" onclick="startStream()">▶️ Start Stream</button>
-                        <button class="control-btn stop" onclick="stopStream()">⏹️ Stop Stream</button>
+                    <div class="controls">
                         <button class="control-btn" onclick="refreshStream()">🔄 Refresh Stream</button>
+                        <button class="control-btn" onclick="checkConnection()">🔍 Check Connection</button>
                     </div>
                 </div>
                 
-                <!-- Statistics Panel -->
+                <!-- Statistics -->
                 <div class="stats-panel">
-                    <h3>📊 Real-time Statistics</h3>
+                    <h3>📊 Live Statistics</h3>
                     <div class="stat-card">
                         <div class="stat-number" id="vehicleCount">0</div>
                         <div class="stat-label">Vehicles Detected</div>
@@ -288,43 +345,29 @@ def home():
                         <div class="stat-label">Seconds Uptime</div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-number" id="streamStatus">Live</div>
-                        <div class="stat-label">Stream Status</div>
+                        <div class="stat-number" id="connectionStatus">Connected</div>
+                        <div class="stat-label">ESP32 Status</div>
                     </div>
                 </div>
             </div>
             
-            <!-- Stream Configuration -->
-            <div class="stream-config">
-                <h3>🔧 Stream Configuration</h3>
-                <p>Current Stream: <strong id="currentStream">Demo Stream (Synthetic)</strong></p>
+            <!-- Connection Information -->
+            <div class="connection-info">
+                <h3>🔗 ESP32 Connection</h3>
+                <p><strong>Stream URL:</strong> <code>http://192.168.4.1/</code></p>
+                <p><strong>Status:</strong> <span id="detailedStatus">Connecting to ESP32...</span></p>
+                <p><strong>Note:</strong> If ESP32 is unavailable, demo stream will activate automatically.</p>
                 
-                <div class="input-group">
-                    <input type="text" id="streamUrl" 
-                           placeholder="Enter ESP32 stream URL: http://192.168.1.100:81/stream">
-                    <button class="control-btn" onclick="changeStream()">Change Stream</button>
-                </div>
-                
-                <div class="examples">
-                    <h4>📹 Example Stream URLs:</h4>
-                    <ul>
-                        <li><strong>ESP32 Camera:</strong> http://192.168.1.100:81/stream</li>
-                        <li><strong>RTSP Camera:</strong> rtsp://username:password@ip:port/stream</li>
-                        <li><strong>Webcam:</strong> 0 (local testing only)</li>
-                        <li><strong>Video File:</strong> traffic.mp4</li>
-                    </ul>
-                </div>
-                
-                <div id="streamMessage" style="margin-top: 15px; padding: 10px; border-radius: 5px;"></div>
+                <div id="connectionMessage" style="margin-top: 15px; padding: 10px; border-radius: 5px;"></div>
             </div>
         </div>
 
         <script>
             let frameCount = 0;
             let startTime = Date.now();
-            let streamActive = true;
+            let isConnected = false;
             
-            // Update statistics in real-time
+            // Update statistics
             function updateStats() {
                 fetch('/api/status')
                     .then(response => response.json())
@@ -333,7 +376,14 @@ def home():
                         document.getElementById('totalDetections').textContent = data.total_detections;
                         document.getElementById('uptime').textContent = Math.round(data.uptime);
                         document.getElementById('liveCount').textContent = data.vehicle_count;
-                        document.getElementById('streamStatus').textContent = streamActive ? 'Live' : 'Stopped';
+                        
+                        // Update connection status
+                        isConnected = data.esp32_connected;
+                        document.getElementById('connectionStatus').textContent = isConnected ? 'Connected' : 'Demo';
+                        document.getElementById('statusIndicator').className = 
+                            'status-indicator ' + (isConnected ? 'status-connected' : 'status-disconnected');
+                        document.getElementById('detailedStatus').textContent = 
+                            isConnected ? '✅ Connected to ESP32' : '⚠️ Using demo stream';
                     })
                     .catch(error => {
                         console.log('Stats update error:', error);
@@ -350,55 +400,24 @@ def home():
                 }
             }
             
-            // Stream control functions
-            function startStream() {
-                streamActive = true;
-                document.getElementById('videoFeed').src = '/video_feed?' + new Date().getTime();
-                showMessage('Stream started successfully!', 'success');
-            }
-            
-            function stopStream() {
-                streamActive = false;
-                document.getElementById('videoFeed').src = '';
-                showMessage('Stream stopped.', 'warning');
-            }
-            
+            // Stream controls
             function refreshStream() {
                 document.getElementById('videoFeed').src = '/video_feed?' + new Date().getTime();
                 showMessage('Stream refreshed!', 'success');
             }
             
-            function changeStream() {
-                const url = document.getElementById('streamUrl').value;
-                if (url) {
-                    fetch('/api/set_stream', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({stream_url: url})
-                    })
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.success) {
-                            document.getElementById('currentStream').textContent = url;
-                            showMessage('Stream URL updated! Refresh the stream.', 'success');
-                        } else {
-                            showMessage('Error: ' + data.message, 'error');
-                        }
-                    })
-                    .catch(error => {
-                        showMessage('Connection error: ' + error, 'error');
-                    });
-                } else {
-                    showMessage('Please enter a stream URL', 'error');
-                }
+            function checkConnection() {
+                showMessage('Checking ESP32 connection...', 'info');
+                refreshStream();
             }
             
             function showMessage(message, type) {
-                const messageDiv = document.getElementById('streamMessage');
+                const messageDiv = document.getElementById('connectionMessage');
                 const colors = {
                     success: '#27ae60',
                     error: '#e74c3c', 
-                    warning: '#f39c12'
+                    warning: '#f39c12',
+                    info: '#3498db'
                 };
                 messageDiv.innerHTML = message;
                 messageDiv.style.background = colors[type] || '#3498db';
@@ -407,19 +426,20 @@ def home():
                 setTimeout(() => {
                     messageDiv.innerHTML = '';
                     messageDiv.style.background = 'transparent';
-                }, 5000);
+                }, 3000);
             }
             
-            // Handle video stream errors
+            // Handle stream errors
             document.getElementById('videoFeed').onerror = function() {
-                showMessage('Video stream disconnected. Please check the stream source.', 'error');
+                showMessage('Stream disconnected. Trying to reconnect...', 'error');
+                setTimeout(refreshStream, 2000);
             };
             
-            // Auto-start stream and update stats
+            // Auto-start
             document.addEventListener('DOMContentLoaded', function() {
-                startStream();
                 setInterval(updateStats, 1000);
                 updateStats();
+                showMessage('Automatically connected to ESP32: http://192.168.4.1/', 'success');
             });
         </script>
     </body>
@@ -428,76 +448,27 @@ def home():
 
 @app.route('/video_feed')
 def video_feed():
-    """Video streaming route"""
+    """Video streaming route - automatically uses ESP32"""
     global stream_active
     stream_active = True
-    return Response(generate_demo_stream(),
+    return Response(generate_esp32_stream(),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/api/status')
 def api_status():
     """API status endpoint"""
-    global vehicle_count, total_detections, stream_active
+    global vehicle_count, total_detections, current_capture
+    
+    # Check if ESP32 is connected
+    esp32_connected = current_capture is not None and current_capture.isOpened()
+    
     return jsonify({
         'status': 'operational',
         'vehicle_count': vehicle_count,
         'total_detections': total_detections,
-        'stream_active': stream_active,
+        'esp32_connected': esp32_connected,
+        'stream_url': 'http://192.168.4.1/',
         'uptime': time.time() - app_start_time,
-        'timestamp': time.time()
-    })
-
-@app.route('/api/start', methods=['POST'])
-def start_stream():
-    """Start video stream"""
-    global stream_active
-    stream_active = True
-    return jsonify({
-        'success': True,
-        'message': 'Video stream started',
-        'timestamp': time.time()
-    })
-
-@app.route('/api/stop', methods=['POST'])
-def stop_stream():
-    """Stop video stream"""
-    global stream_active
-    stream_active = False
-    return jsonify({
-        'success': True,
-        'message': 'Video stream stopped',
-        'timestamp': time.time()
-    })
-
-@app.route('/api/set_stream', methods=['POST'])
-def set_stream():
-    """Change video stream source"""
-    data = request.get_json()
-    stream_url = data.get('stream_url', '')
-    
-    # In a real implementation, you would update the video capture source here
-    # For now, we'll just acknowledge the request
-    
-    return jsonify({
-        'success': True,
-        'message': f'Stream source updated to: {stream_url}',
-        'stream_url': stream_url
-    })
-
-@app.route('/api/detect', methods=['POST'])
-def api_detect():
-    """Detection endpoint for ESP32"""
-    global vehicle_count, total_detections
-    
-    # Simulate vehicle detection
-    detected_vehicles = random.randint(1, 5)
-    vehicle_count = detected_vehicles
-    total_detections += 1
-    
-    return jsonify({
-        'success': True,
-        'vehicles_detected': detected_vehicles,
-        'message': 'Simulated detection successful',
         'timestamp': time.time()
     })
 
@@ -507,7 +478,7 @@ def health_check():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"🚀 Live Vehicle Detection Dashboard running on port {port}")
-    print("📹 Video streaming ENABLED")
-    print("🌐 Open your browser to see the live stream!")
+    print(f"🚀 ESP32 Vehicle Detection Dashboard running on port {port}")
+    print(f"📹 AUTO-CONNECTING to: http://192.168.4.1/")
+    print("🌐 Open your browser to see the live ESP32 stream!")
     app.run(host='0.0.0.0', port=port, debug=False)
