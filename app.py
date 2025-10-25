@@ -1,15 +1,10 @@
 import os
 import time
 from flask import Flask, jsonify, request
-import logging
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Global variables
+# Simple in-memory storage
 vehicle_count = 0
 total_detections = 0
 app_start_time = time.time()
@@ -23,7 +18,7 @@ def home():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Vehicle Detection API</title>
+        <title>Vehicle Detection API - READY</title>
         <style>
             * { margin: 0; padding: 0; box-sizing: border-box; }
             body { 
@@ -50,10 +45,6 @@ def home():
                 font-size: 2.5em;
                 margin-bottom: 10px;
             }
-            .header p {
-                font-size: 1.2em;
-                opacity: 0.9;
-            }
             .content {
                 padding: 40px;
             }
@@ -63,6 +54,13 @@ def home():
                 padding: 25px;
                 margin-bottom: 20px;
                 border-left: 5px solid #3498db;
+            }
+            .success {
+                background: #d4edda;
+                border-left: 5px solid #28a745;
+                padding: 25px;
+                border-radius: 10px;
+                margin-bottom: 20px;
             }
             .endpoints {
                 display: grid;
@@ -75,11 +73,6 @@ def home():
                 border: 1px solid #e1e5e9;
                 border-radius: 10px;
                 padding: 20px;
-                transition: transform 0.2s;
-            }
-            .endpoint-card:hover {
-                transform: translateY(-5px);
-                box-shadow: 0 10px 25px rgba(0,0,0,0.1);
             }
             .method {
                 display: inline-block;
@@ -100,104 +93,90 @@ def home():
                 margin: 10px 0;
                 word-break: break-all;
             }
-            .status-badge {
-                display: inline-block;
-                padding: 5px 15px;
-                background: #27ae60;
-                color: white;
-                border-radius: 20px;
-                font-weight: bold;
-                margin-left: 10px;
-            }
-            .warning {
-                background: #fff3cd;
-                border-left: 5px solid #ffc107;
-                padding: 15px;
-                border-radius: 5px;
-                margin: 15px 0;
-            }
         </style>
     </head>
     <body>
         <div class="container">
             <div class="header">
                 <h1>🚗 Vehicle Detection API</h1>
-                <p>Powered by Flask & Deployed on Render.com Free Tier</p>
+                <p>Successfully Deployed on Render.com Free Tier! 🎉</p>
             </div>
             
             <div class="content">
-                <div class="card">
-                    <h2>System Status: <span class="status-badge">🟢 OPERATIONAL</span></h2>
-                    <p>This service provides vehicle detection API endpoints.</p>
-                </div>
-
-                <div class="warning">
-                    <strong>Note:</strong> Basic API is running. Computer vision features will be added after successful deployment.
+                <div class="success">
+                    <h2>✅ Deployment Successful!</h2>
+                    <p>Your Flask API is now live and running. The basic infrastructure is ready.</p>
                 </div>
                 
                 <div class="card">
                     <h3>📊 Current Statistics</h3>
-                    <div id="stats">
-                        <p>📈 Vehicles Detected: <strong>0</strong></p>
-                        <p>🔄 Total Detections: <strong>0</strong></p>
-                        <p>🤖 Model Status: <strong>Basic API Ready</strong></p>
-                        <p>⏰ Uptime: <strong id="uptime">0</strong> seconds</p>
-                        <p>🌐 Platform: <strong>render-free</strong></p>
-                    </div>
+                    <p>Vehicles Detected: <strong>0</strong></p>
+                    <p>Total API Calls: <strong id="totalCalls">0</strong></p>
+                    <p>Uptime: <strong id="uptime">0</strong> seconds</p>
                 </div>
                 
-                <h3>🔗 API Endpoints</h3>
+                <h3>🔗 API Endpoints (Working)</h3>
                 <div class="endpoints">
                     <div class="endpoint-card">
                         <span class="method get">GET</span>
                         <h4>System Status</h4>
                         <div class="url">/api/status</div>
-                        <p>Check system status and current vehicle count</p>
+                        <p>Check system status</p>
                     </div>
                     
                     <div class="endpoint-card">
                         <span class="method post">POST</span>
-                        <h4>Detect Vehicles</h4>
+                        <h4>Simulate Detection</h4>
                         <div class="url">/api/detect</div>
-                        <p>Upload an image for vehicle detection</p>
-                        <p><strong>Body:</strong> form-data with 'image' file</p>
+                        <p>Test the detection endpoint</p>
                     </div>
                     
                     <div class="endpoint-card">
                         <span class="method get">GET</span>
                         <h4>Health Check</h4>
                         <div class="url">/health</div>
-                        <p>Simple health check endpoint</p>
+                        <p>Verify API is running</p>
                     </div>
                 </div>
                 
                 <div class="card">
-                    <h3>🛠️ How to Use</h3>
-                    <p><strong>For ESP32 Integration:</strong></p>
+                    <h3>🛠️ Next Steps</h3>
                     <ol>
-                        <li>Capture image with ESP32 camera</li>
-                        <li>Send POST request to <code>/api/detect</code> with image data</li>
-                        <li>Receive JSON response with vehicle count</li>
+                        <li><strong>Test your API</strong> - Use the endpoints above</li>
+                        <li><strong>Add computer vision</strong> - Once basic API works, we'll add OpenCV and YOLO</li>
+                        <li><strong>Connect ESP32</strong> - Your ESP32 can now send requests to this API</li>
                     </ol>
                     
-                    <p><strong>Example cURL:</strong></p>
-                    <div class="url">
-                        curl -X POST -F "image=@car.jpg" https://your-app.onrender.com/api/detect
-                    </div>
+                    <p><strong>Your API URL:</strong></p>
+                    <div class="url" id="apiUrl">https://your-app.onrender.com</div>
                 </div>
             </div>
         </div>
         
         <script>
-            // Update uptime
-            function updateUptime() {
-                const startTime = Date.now() / 1000;
+            // Update dynamic content
+            function updateDynamicContent() {
+                // Update uptime
+                const startTime = Math.floor(Date.now() / 1000);
                 setInterval(() => {
-                    const uptime = Math.round((Date.now() / 1000) - startTime);
-                    document.getElementById('uptime').textContent = uptime;
+                    const currentTime = Math.floor(Date.now() / 1000);
+                    document.getElementById('uptime').textContent = currentTime - startTime;
                 }, 1000);
+                
+                // Update API URL
+                document.getElementById('apiUrl').textContent = window.location.origin;
+                
+                // Update stats periodically
+                setInterval(() => {
+                    fetch('/api/status')
+                        .then(response => response.json())
+                        .then(data => {
+                            document.getElementById('totalCalls').textContent = data.total_detections;
+                        });
+                }, 3000);
             }
-            updateUptime();
+            
+            updateDynamicContent();
         </script>
     </body>
     </html>
@@ -212,65 +191,36 @@ def api_status():
         'status': 'operational',
         'vehicle_count': vehicle_count,
         'total_detections': total_detections,
-        'detector_ready': False,
-        'model': 'basic-api',
-        'platform': 'render-free',
+        'message': 'Basic API running successfully. Ready to add computer vision.',
         'uptime': time.time() - app_start_time,
-        'timestamp': time.time(),
-        'message': 'Basic API running. Computer vision features pending installation.'
+        'timestamp': time.time()
     })
 
 @app.route('/api/detect', methods=['POST'])
 def api_detect():
-    """Main detection endpoint - SIMULATED for now"""
+    """Simulated detection endpoint"""
     global vehicle_count, total_detections
     
-    try:
-        if 'image' not in request.files:
-            return jsonify({
-                'success': False,
-                'error': 'No image file provided. Send as form-data with "image" field.'
-            }), 400
-        
-        image_file = request.files['image']
-        
-        if image_file.filename == '':
-            return jsonify({
-                'success': False,
-                'error': 'No image selected'
-            }), 400
-        
-        # Read image data (but don't process yet)
-        image_data = image_file.read()
-        
-        if len(image_data) == 0:
-            return jsonify({
-                'success': False,
-                'error': 'Empty image file'
-            }), 400
-        
-        # Simulate detection for now
-        # In a real scenario, this would use YOLO/OpenCV
-        simulated_vehicles = 2  # Simulate finding 2 vehicles
-        
-        vehicle_count = simulated_vehicles
-        total_detections += 1
-        
-        return jsonify({
-            'success': True,
-            'vehicles_detected': simulated_vehicles,
-            'message': 'SIMULATED DETECTION - Computer vision libraries not yet installed',
-            'timestamp': time.time(),
-            'processing_time': 'simulated',
-            'note': 'Install OpenCV and Ultralytics after successful deployment'
-        })
-        
-    except Exception as e:
-        logger.error(f"Detection error: {e}")
-        return jsonify({
-            'success': False,
-            'error': f'Processing error: {str(e)}'
-        }), 500
+    total_detections += 1
+    
+    # Simulate vehicle detection
+    vehicle_count = 2  # Simulate finding 2 vehicles
+    
+    return jsonify({
+        'success': True,
+        'vehicles_detected': vehicle_count,
+        'message': 'SIMULATED: API is working! Add OpenCV and YOLO for real detection.',
+        'timestamp': time.time(),
+        'note': 'This is a simulation. Install computer vision libraries next.'
+    })
+
+@app.route('/api/detect', methods=['GET'])
+def api_detect_get():
+    """GET method for testing"""
+    return jsonify({
+        'message': 'Send POST request with image data for vehicle detection simulation',
+        'example_curl': 'curl -X POST -F "image=@test.jpg" YOUR-APP-URL/api/detect'
+    })
 
 @app.route('/health')
 def health_check():
@@ -278,12 +228,11 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'service': 'vehicle-detection-basic',
-        'timestamp': time.time(),
-        'message': 'Basic API is running successfully'
+        'timestamp': time.time()
     })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    logger.info(f"🚀 Starting Basic Vehicle Detection API on port {port}...")
-    logger.info("📝 Note: Computer vision features will be added after successful deployment")
+    print(f"🚀 Basic Vehicle Detection API running on port {port}")
+    print("✅ Deployment successful! Ready to add computer vision features.")
     app.run(host='0.0.0.0', port=port, debug=False)
