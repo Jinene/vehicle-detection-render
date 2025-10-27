@@ -1,140 +1,116 @@
-import os
-import time
 import cv2
 import numpy as np
-from flask import Flask, jsonify, request, Response
-import threading
-import random
+from flask import Flask, Response, jsonify
+import requests
+from ultralytics import YOLO
+import time
+import os
 
 app = Flask(__name__)
+
+# Your Ngrok URL (update this after starting ngrok)
+NGROK_STREAM_URL = "https://YOUR_NGROK_ID.ngrok.io/stream"
 
 # Global variables
 vehicle_count = 0
 total_detections = 0
-app_start_time = time.time()
 stream_active = True
+ai_model = None
 
-# YOUR ESP32 STREAM URL - Automatically connected
-ESP32_STREAM_URL = "http://192.168.4.1/"
-current_capture = None
-
-def initialize_camera():
-    """Initialize connection to ESP32 camera"""
-    global current_capture
+# Initialize AI model
+def initialize_ai():
+    global ai_model
     try:
-        print(f"🚀 Connecting to ESP32 camera: {ESP32_STREAM_URL}")
-        current_capture = cv2.VideoCapture(ESP32_STREAM_URL)
-        
-        # Test the connection
-        if current_capture.isOpened():
-            ret, frame = current_capture.read()
-            if ret:
-                print("✅ Successfully connected to ESP32 camera!")
-                return True
-            else:
-                print("❌ Connected but cannot read frames")
-        else:
-            print("❌ Cannot connect to ESP32 camera")
-            
+        print("🚀 Loading YOLO model on Render...")
+        ai_model = YOLO('yolov8n.pt')
+        print("✅ AI Model ready on Render!")
     except Exception as e:
-        print(f"❌ Error connecting to ESP32: {e}")
-    
-    return False
+        print(f"❌ AI Model failed: {e}")
 
-def generate_esp32_stream():
-    """Generate video stream from ESP32 camera"""
-    global stream_active, vehicle_count
+# Initialize on startup
+initialize_ai()
+
+def test_ngrok_connection():
+    """Test if ngrok bridge is accessible"""
+    try:
+        response = requests.get(NGROK_STREAM_URL, timeout=10)
+        return response.status_code == 200
+    except Exception as e:
+        print(f"❌ Ngrok connection test failed: {e}")
+        return False
+
+def generate_cloud_stream():
+    """Generate stream from ESP32 via ngrok bridge with AI detection"""
+    global vehicle_count, total_detections
     
-    # Initialize camera connection
-    if not initialize_camera():
-        # Fallback to demo stream if ESP32 is not available
-        yield from generate_demo_stream()
+    print("🌐 Connecting to ESP32 via Ngrok bridge...")
+    
+    if not test_ngrok_connection():
+        yield from generate_offline_stream()
         return
     
-    frame_count = 0
-    while stream_active and current_capture.isOpened():
-        try:
-            # Read frame from ESP32
-            ret, frame = current_capture.read()
+    try:
+        # Connect to ngrok bridge
+        cap = cv2.VideoCapture(NGROK_STREAM_URL)
+        
+        if not cap.isOpened():
+            print("❌ Cannot open ngrok stream")
+            yield from generate_offline_stream()
+            return
+        
+        print("✅ Connected to ESP32 via Ngrok!")
+        
+        frame_count = 0
+        while stream_active:
+            ret, frame = cap.read()
             
             if not ret:
-                print("❌ Lost connection to ESP32, switching to demo stream")
-                yield from generate_demo_stream()
+                print("❌ Lost connection to ngrok bridge")
                 break
             
-            # Resize frame for consistent display
-            frame = cv2.resize(frame, (640, 480))
+            # AI Vehicle Detection on Render
+            detected_vehicles = 0
+            if ai_model is not None:
+                try:
+                    results = ai_model(frame, verbose=False, conf=0.5)
+                    vehicle_classes = [2, 3, 5, 7]  # car, motorcycle, bus, truck
+                    
+                    for result in results:
+                        boxes = result.boxes
+                        for box in boxes:
+                            class_id = int(box.cls[0])
+                            confidence = float(box.conf[0])
+                            
+                            if class_id in vehicle_classes and confidence > 0.5:
+                                detected_vehicles += 1
+                                
+                                # Draw bounding box
+                                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                                
+                                # Add AI label
+                                label = f"{ai_model.names[class_id]} {confidence:.2f}"
+                                cv2.putText(frame, label, (x1, y1-10), 
+                                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                except Exception as e:
+                    print(f"AI detection error: {e}")
             
-            # Perform vehicle detection on the frame
-            processed_frame, detected_vehicles = detect_vehicles(frame)
             vehicle_count = detected_vehicles
-            
-            # Add overlay information
-            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-            cv2.putText(processed_frame, f"ESP32 Live Stream - {timestamp}", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(processed_frame, f"Vehicles: {vehicle_count}", (10, 60), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            cv2.putText(processed_frame, "Source: http://192.168.4.1/", (10, 450), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            
-            # Encode frame as JPEG
-            ret, buffer = cv2.imencode('.jpg', processed_frame)
-            frame_bytes = buffer.tobytes()
-            
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-            
+            total_detections += detected_vehicles
             frame_count += 1
-            time.sleep(0.1)  # Control frame rate
             
-        except Exception as e:
-            print(f"Stream error: {e}")
-            yield from generate_demo_stream()
-            break
-
-def generate_demo_stream():
-    """Generate demo stream as fallback"""
-    global vehicle_count
-    while stream_active:
-        try:
-            width, height = 640, 480
-            frame = np.zeros((height, width, 3), dtype=np.uint8)
-            
-            # Create realistic background
-            frame[100:400, :] = [100, 100, 100]  # Road
-            frame[0:100, :] = [135, 206, 235]    # Sky
-            frame[400:480, :] = [34, 139, 34]    # Grass
-            
-            # Road markings
-            cv2.line(frame, (0, 250), (width, 250), (255, 255, 255), 2)
-            cv2.line(frame, (0, 350), (width, 350), (255, 255, 255), 2)
-            
-            # Moving vehicles
-            vehicle_count = random.randint(1, 4)
-            colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0), (255, 255, 0)]
-            
-            for i in range(vehicle_count):
-                x_pos = int((time.time() * 50 + i * 150) % (width + 200) - 100)
-                y_pos = 280 + (i * 30)
-                
-                cv2.rectangle(frame, (x_pos, y_pos), (x_pos + 120, y_pos + 60), colors[i], -1)
-                cv2.rectangle(frame, (x_pos + 10, y_pos + 10), (x_pos + 50, y_pos + 30), (200, 200, 255), -1)
-                cv2.rectangle(frame, (x_pos + 70, y_pos + 10), (x_pos + 110, y_pos + 30), (200, 200, 255), -1)
-                
-                vehicle_types = ["Car", "Truck", "Bus", "Motorcycle"]
-                cv2.putText(frame, vehicle_types[i], (x_pos + 10, y_pos - 10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, colors[i], 2)
-            
-            # Overlay info
+            # Add cloud processing overlay
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-            cv2.putText(frame, f"Demo Stream - ESP32 Offline - {timestamp}", (10, 30), 
+            cv2.putText(frame, f"RENDER CLOUD AI - {timestamp}", (10, 30), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             cv2.putText(frame, f"Vehicles: {vehicle_count}", (10, 60), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            cv2.putText(frame, "Trying to connect: http://192.168.4.1/", (10, 450), 
+            cv2.putText(frame, f"Total: {total_detections}", (10, 90), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+            cv2.putText(frame, "Stream: ESP32 → Ngrok → Render Cloud", (10, 450), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
+            # Encode and stream
             ret, buffer = cv2.imencode('.jpg', frame)
             frame_bytes = buffer.tobytes()
             
@@ -142,305 +118,183 @@ def generate_demo_stream():
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
             
             time.sleep(0.1)
-            
-        except Exception as e:
-            print(f"Demo stream error: {e}")
-            break
-
-def detect_vehicles(frame):
-    """Simple vehicle detection (will be enhanced with YOLO later)"""
-    try:
-        # Convert to grayscale
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
-        # Simple detection based on color and shape (placeholder)
-        # This will be replaced with YOLO in the next phase
-        height, width = frame.shape[:2]
-        
-        # Simulate detection for now
-        detected_vehicles = random.randint(0, 3)
-        
-        # Draw some detection indicators
-        if detected_vehicles > 0:
-            cv2.putText(frame, "VEHICLE DETECTED", (width-200, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        
-        return frame, detected_vehicles
+        cap.release()
         
     except Exception as e:
-        print(f"Detection error: {e}")
-        return frame, 0
+        print(f"Cloud stream error: {e}")
+        yield from generate_offline_stream()
+
+def generate_offline_stream():
+    """Offline message when bridge is down"""
+    while stream_active:
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        frame[:] = [30, 30, 30]
+        
+        cv2.putText(frame, "CLOUD: ESP32 Bridge Offline", (50, 200), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        cv2.putText(frame, "Please check:", (50, 240), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(frame, "1. Computer running bridge_server.py", (50, 270), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(frame, "2. Ngrok tunnel active", (50, 300), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(frame, "3. ESP32 connected to bridge", (50, 330), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        ret, buffer = cv2.imencode('.jpg', frame)
+        frame_bytes = buffer.tobytes()
+        
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+        
+        time.sleep(2)
 
 @app.route('/')
-def home():
-    """Dashboard with ESP32 live streaming"""
+def dashboard():
+    """Cloud Dashboard with real HTML"""
     return """
     <!DOCTYPE html>
     <html>
     <head>
-        <title>ESP32 Live Vehicle Detection</title>
-        <meta charset="UTF-8">
+        <title>Cloud ESP32 Vehicle Detection</title>
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
-            * { margin: 0; padding: 0; box-sizing: border-box; }
             body { 
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-                background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-                min-height: 100vh;
-                padding: 20px;
+                font-family: Arial, sans-serif; 
+                margin: 0; padding: 20px;
+                background: linear-gradient(135deg, #1a2a6c, #b21f1f, #fdbb2d);
                 color: white;
+                min-height: 100vh;
             }
-            .dashboard {
-                max-width: 1200px;
-                margin: 0 auto;
-            }
-            .header {
-                text-align: center;
+            .container { max-width: 1200px; margin: 0 auto; }
+            .header { 
+                text-align: center; 
                 margin-bottom: 30px;
                 background: rgba(255,255,255,0.1);
                 padding: 25px;
                 border-radius: 15px;
                 backdrop-filter: blur(10px);
             }
-            .header h1 {
-                font-size: 2.5em;
-                margin-bottom: 10px;
-                color: #fff;
+            .cloud-badge { 
+                background: #fdbb2d; 
+                color: #000; 
+                padding: 5px 15px; 
+                border-radius: 20px;
+                margin-left: 10px;
             }
-            .live-container {
-                display: grid;
-                grid-template-columns: 2fr 1fr;
-                gap: 20px;
-                margin-bottom: 20px;
-            }
-            @media (max-width: 768px) {
-                .live-container {
-                    grid-template-columns: 1fr;
-                }
-            }
-            .video-stream {
+            .video-container { 
+                text-align: center; 
                 background: rgba(0,0,0,0.8);
+                padding: 20px;
                 border-radius: 15px;
-                padding: 15px;
-                text-align: center;
-                position: relative;
+                margin: 20px 0;
             }
-            .video-container {
-                position: relative;
-                display: inline-block;
-            }
-            #videoFeed {
-                max-width: 100%;
-                border-radius: 10px;
+            #videoFeed { 
+                max-width: 100%; 
                 border: 3px solid #00ff00;
-                background: #000;
+                border-radius: 10px;
+                box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
             }
-            .stream-overlay {
-                position: absolute;
-                top: 15px;
-                left: 15px;
-                background: rgba(0,0,0,0.7);
-                color: #00ff00;
-                padding: 10px 15px;
-                border-radius: 5px;
-                font-family: monospace;
-                font-size: 14px;
-            }
-            .stats-panel {
+            .architecture {
                 background: rgba(255,255,255,0.1);
-                padding: 25px;
-                border-radius: 15px;
-                backdrop-filter: blur(10px);
-            }
-            .stat-card {
-                background: rgba(255,255,255,0.15);
                 padding: 20px;
                 border-radius: 10px;
-                margin-bottom: 15px;
+                margin: 20px 0;
+                font-family: monospace;
+            }
+            .stats {
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 15px;
+                margin: 20px 0;
+            }
+            .stat-card {
+                background: rgba(255,255,255,0.1);
+                padding: 20px;
+                border-radius: 10px;
                 text-align: center;
+                backdrop-filter: blur(10px);
             }
             .stat-number {
-                font-size: 2.5em;
+                font-size: 2em;
                 font-weight: bold;
                 color: #00ff00;
             }
-            .stat-label {
-                font-size: 1.1em;
-                opacity: 0.9;
-            }
-            .connection-info {
-                background: rgba(255,255,255,0.1);
-                padding: 20px;
-                border-radius: 15px;
-                margin-top: 20px;
-                backdrop-filter: blur(10px);
-            }
-            .status-indicator {
-                display: inline-block;
-                width: 12px;
-                height: 12px;
-                border-radius: 50%;
-                margin-right: 8px;
-            }
-            .status-connected { background: #00ff00; }
-            .status-disconnected { background: #ff0000; }
-            .controls {
-                display: grid;
-                gap: 10px;
-                margin-top: 15px;
-            }
-            .control-btn {
-                background: #3498db;
-                color: white;
-                border: none;
-                padding: 12px;
-                border-radius: 8px;
-                cursor: pointer;
-                font-size: 1em;
-                transition: background 0.3s;
-            }
-            .control-btn:hover {
-                background: #2980b9;
-            }
+            .status-online { color: #00ff00; }
+            .status-offline { color: #ff0000; }
         </style>
     </head>
     <body>
-        <div class="dashboard">
+        <div class="container">
             <div class="header">
-                <h1>🚗 ESP32 Live Vehicle Detection</h1>
-                <p>Directly streaming from your ESP32 camera</p>
+                <h1>☁️ Cloud ESP32 Vehicle Detection <span class="cloud-badge">RENDER</span></h1>
+                <p>AI processing in cloud, streaming from ESP32 Access Point</p>
             </div>
             
-            <div class="live-container">
-                <!-- ESP32 Video Stream -->
-                <div class="video-stream">
-                    <h3>📹 ESP32 Live Stream</h3>
-                    <div class="video-container">
-                        <img id="videoFeed" src="/video_feed" alt="ESP32 Live Feed">
-                        <div class="stream-overlay">
-                            <span class="status-indicator status-connected" id="statusIndicator"></span>
-                            Vehicles: <span id="liveCount">0</span> | 
-                            FPS: <span id="fpsCounter">0</span>
-                        </div>
-                    </div>
-                    <div class="controls">
-                        <button class="control-btn" onclick="refreshStream()">🔄 Refresh Stream</button>
-                        <button class="control-btn" onclick="checkConnection()">🔍 Check Connection</button>
-                    </div>
+            <div class="architecture">
+                <h3>🔗 Architecture: ESP32 → Your Computer → Ngrok → Render Cloud</h3>
+                <p>ESP32 WiFi (192.168.4.1) → Bridge → Internet → Cloud AI Processing</p>
+            </div>
+            
+            <div class="video-container">
+                <img id="videoFeed" src="/video_feed" alt="Cloud ESP32 Stream">
+            </div>
+            
+            <div class="stats">
+                <div class="stat-card">
+                    <div class="stat-number" id="vehicleCount">0</div>
+                    <div>Vehicles Detected</div>
                 </div>
-                
-                <!-- Statistics -->
-                <div class="stats-panel">
-                    <h3>📊 Live Statistics</h3>
-                    <div class="stat-card">
-                        <div class="stat-number" id="vehicleCount">0</div>
-                        <div class="stat-label">Vehicles Detected</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-number" id="totalDetections">0</div>
-                        <div class="stat-label">Total Detections</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-number" id="uptime">0</div>
-                        <div class="stat-label">Seconds Uptime</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-number" id="connectionStatus">Connected</div>
-                        <div class="stat-label">ESP32 Status</div>
-                    </div>
+                <div class="stat-card">
+                    <div class="stat-number" id="totalDetections">0</div>
+                    <div>Total Detections</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number" id="aiStatus">Active</div>
+                    <div>AI Status</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number" id="connection">Checking</div>
+                    <div>ESP32 Connection</div>
                 </div>
             </div>
             
-            <!-- Connection Information -->
-            <div class="connection-info">
-                <h3>🔗 ESP32 Connection</h3>
-                <p><strong>Stream URL:</strong> <code>http://192.168.4.1/</code></p>
-                <p><strong>Status:</strong> <span id="detailedStatus">Connecting to ESP32...</span></p>
-                <p><strong>Note:</strong> If ESP32 is unavailable, demo stream will activate automatically.</p>
-                
-                <div id="connectionMessage" style="margin-top: 15px; padding: 10px; border-radius: 5px;"></div>
+            <div style="background: rgba(255,255,255,0.1); padding: 20px; border-radius: 10px;">
+                <h3>📊 System Information</h3>
+                <p><strong>AI Model:</strong> YOLOv8n (Real-time vehicle detection)</p>
+                <p><strong>Detection:</strong> Cars, Motorcycles, Buses, Trucks</p>
+                <p><strong>Processing:</strong> Render Cloud Server</p>
+                <p><strong>Stream Source:</strong> ESP32 Camera via Ngrok</p>
             </div>
         </div>
 
         <script>
-            let frameCount = 0;
-            let startTime = Date.now();
-            let isConnected = false;
-            
-            // Update statistics
             function updateStats() {
                 fetch('/api/status')
-                    .then(response => response.json())
+                    .then(r => r.json())
                     .then(data => {
                         document.getElementById('vehicleCount').textContent = data.vehicle_count;
                         document.getElementById('totalDetections').textContent = data.total_detections;
-                        document.getElementById('uptime').textContent = Math.round(data.uptime);
-                        document.getElementById('liveCount').textContent = data.vehicle_count;
-                        
-                        // Update connection status
-                        isConnected = data.esp32_connected;
-                        document.getElementById('connectionStatus').textContent = isConnected ? 'Connected' : 'Demo';
-                        document.getElementById('statusIndicator').className = 
-                            'status-indicator ' + (isConnected ? 'status-connected' : 'status-disconnected');
-                        document.getElementById('detailedStatus').textContent = 
-                            isConnected ? '✅ Connected to ESP32' : '⚠️ Using demo stream';
+                        document.getElementById('aiStatus').textContent = data.ai_active ? 'Active' : 'Inactive';
+                        document.getElementById('aiStatus').className = data.ai_active ? 'status-online' : 'status-offline';
+                        document.getElementById('connection').textContent = data.connected ? 'Connected' : 'Offline';
+                        document.getElementById('connection').className = data.connected ? 'status-online' : 'status-offline';
                     })
                     .catch(error => {
-                        console.log('Stats update error:', error);
+                        console.log('Error updating stats:', error);
                     });
-                
-                // Calculate FPS
-                frameCount++;
-                const currentTime = Date.now();
-                const elapsed = (currentTime - startTime) / 1000;
-                if (elapsed >= 1) {
-                    document.getElementById('fpsCounter').textContent = Math.round(frameCount / elapsed);
-                    frameCount = 0;
-                    startTime = currentTime;
-                }
             }
             
-            // Stream controls
-            function refreshStream() {
-                document.getElementById('videoFeed').src = '/video_feed?' + new Date().getTime();
-                showMessage('Stream refreshed!', 'success');
-            }
-            
-            function checkConnection() {
-                showMessage('Checking ESP32 connection...', 'info');
-                refreshStream();
-            }
-            
-            function showMessage(message, type) {
-                const messageDiv = document.getElementById('connectionMessage');
-                const colors = {
-                    success: '#27ae60',
-                    error: '#e74c3c', 
-                    warning: '#f39c12',
-                    info: '#3498db'
-                };
-                messageDiv.innerHTML = message;
-                messageDiv.style.background = colors[type] || '#3498db';
-                messageDiv.style.color = 'white';
-                
-                setTimeout(() => {
-                    messageDiv.innerHTML = '';
-                    messageDiv.style.background = 'transparent';
-                }, 3000);
-            }
+            // Update stats every 2 seconds
+            setInterval(updateStats, 2000);
+            updateStats();
             
             // Handle stream errors
             document.getElementById('videoFeed').onerror = function() {
-                showMessage('Stream disconnected. Trying to reconnect...', 'error');
-                setTimeout(refreshStream, 2000);
+                console.log('Video stream error - trying to reconnect...');
+                this.src = this.src + '?' + new Date().getTime();
             };
-            
-            // Auto-start
-            document.addEventListener('DOMContentLoaded', function() {
-                setInterval(updateStats, 1000);
-                updateStats();
-                showMessage('Automatically connected to ESP32: http://192.168.4.1/', 'success');
-            });
         </script>
     </body>
     </html>
@@ -448,37 +302,31 @@ def home():
 
 @app.route('/video_feed')
 def video_feed():
-    """Video streaming route - automatically uses ESP32"""
+    """Cloud video streaming route"""
     global stream_active
     stream_active = True
-    return Response(generate_esp32_stream(),
+    return Response(generate_cloud_stream(),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/api/status')
 def api_status():
     """API status endpoint"""
-    global vehicle_count, total_detections, current_capture
-    
-    # Check if ESP32 is connected
-    esp32_connected = current_capture is not None and current_capture.isOpened()
-    
+    connected = test_ngrok_connection()
     return jsonify({
-        'status': 'operational',
         'vehicle_count': vehicle_count,
         'total_detections': total_detections,
-        'esp32_connected': esp32_connected,
-        'stream_url': 'http://192.168.4.1/',
-        'uptime': time.time() - app_start_time,
-        'timestamp': time.time()
+        'ai_active': ai_model is not None,
+        'connected': connected,
+        'stream_url': NGROK_STREAM_URL,
+        'platform': 'Render Cloud'
     })
 
 @app.route('/health')
-def health_check():
-    return jsonify({'status': 'healthy'})
+def health():
+    return jsonify({'status': 'healthy', 'service': 'vehicle-detection-cloud'})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"🚀 ESP32 Vehicle Detection Dashboard running on port {port}")
-    print(f"📹 AUTO-CONNECTING to: http://192.168.4.1/")
-    print("🌐 Open your browser to see the live ESP32 stream!")
+    print("☁️ Cloud ESP32 Vehicle Detection Starting...")
+    print("🔗 Waiting for Ngrok bridge connection...")
     app.run(host='0.0.0.0', port=port, debug=False)
